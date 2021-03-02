@@ -112,6 +112,7 @@ mkfs/mkfs: mkfs/mkfs.c $K/fs.h $K/param.h
 
 UPROGS=\
 	$U/_cat\
+	$U/_detective\
 	$U/_echo\
 	$U/_grep\
 	$U/_init\

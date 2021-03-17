@@ -142,9 +142,9 @@ UPROGS=\
 	$U/_grind\
 	$U/_wc\
 	$U/_zombie\
-	$U/_setjmp#\
-#	$U/_threads\
-#	$U/_mp1
+	$U/_setjmp\
+	$U/_threads\
+	$U/_mp1
 #
 #	Uncomment the above three lines to compile thread package and mp1
 

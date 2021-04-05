@@ -125,6 +125,7 @@ UPROGS=\
 	$U/_grind\
 	$U/_wc\
 	$U/_zombie\
+	$U/_mp2test\
 
 ph: notxv6/ph.c
 	gcc -o ph -g -O2 notxv6/ph.c -pthread

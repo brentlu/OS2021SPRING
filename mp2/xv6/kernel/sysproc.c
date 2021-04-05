@@ -95,3 +95,17 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_mmap(void)
+{
+  printf("%s:\n", __func__);
+  return -1;
+}
+
+uint64
+sys_munmap(void)
+{
+  printf("%s:\n", __func__);
+  return -1;
+}

@@ -6,6 +6,10 @@
 #include "memlayout.h"
 #include "spinlock.h"
 #include "proc.h"
+#include "fcntl.h"
+#include "fs.h"
+#include "sleeplock.h"
+#include "file.h"
 
 uint64
 sys_exit(void)
@@ -47,6 +51,10 @@ sys_sbrk(void)
   if(argint(0, &n) < 0)
     return -1;
   addr = myproc()->sz;
+  // virtual address space between MMAP and TRAPFRAME is reserved for mmap
+  // function
+  if(PGROUNDUP(addr + n) > MMAP)
+    return -1;
   if(growproc(n) < 0)
     return -1;
   return addr;
@@ -99,8 +107,34 @@ sys_uptime(void)
 uint64
 sys_mmap(void)
 {
-  printf("%s:\n", __func__);
-  return -1;
+  uint64 addr;
+  uint length;
+  int prot, flags;
+  int fd;
+  int offset;
+
+  struct file *f;
+
+  // typedef uint size_t;
+  // typedef int off_t;
+  //
+  // void *mmap(void *addr, size_t length, int prot, int flags,
+  //            int fd, off_t offset);
+
+  if(argaddr(0, &addr) < 0 || arguint(1, &length) < 0 || argint(2, &prot) < 0 ||
+     argint(3, &flags) < 0 || argfd(4, &fd, &f) < 0 || argint(5, &offset) < 0)
+    return -1;
+
+  if(offset % PGSIZE)
+    return -1;
+
+  if(prot & PROT_WRITE && f->writable == 0){
+    /* could not update file when unmap */
+    if (flags & MAP_SHARED)
+      return -1;
+  }
+
+  return mmap(addr, length, prot, flags, f, offset);
 }
 
 uint64

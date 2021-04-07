@@ -61,6 +61,13 @@ argint(int n, int *ip)
   return 0;
 }
 
+int
+arguint(int n, uint *ip)
+{
+  *ip = argraw(n);
+  return 0;
+}
+
 // Retrieve an argument as a pointer.
 // Doesn't check for legality, since
 // copyin/copyout will do that.

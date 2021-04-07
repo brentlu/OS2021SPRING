@@ -5,11 +5,22 @@
 #include "riscv.h"
 #include "defs.h"
 #include "fs.h"
+#include "spinlock.h"
+#include "proc.h"
+#include "fcntl.h"
+#include "sleeplock.h"
+#include "file.h"
 
 /*
  * the kernel's page table.
  */
 pagetable_t kernel_pagetable;
+
+/*
+ * vmarea pool
+ */
+struct vmarea vma_cache[NVMAREA];
+struct vmarea *vma_head = 0;
 
 extern char etext[];  // kernel.ld sets this to end of kernel code.
 
@@ -54,6 +65,11 @@ void
 kvminit(void)
 {
   kernel_pagetable = kvmmake();
+
+  for(int i = 0; i < NVMAREA; i++){
+    vma_cache[i].next = vma_head;
+    vma_head = &vma_cache[i];
+  }
 }
 
 // Switch h/w page table register to the kernel's page table,
@@ -215,13 +231,16 @@ uvminit(pagetable_t pagetable, uchar *src, uint sz)
 // Allocate PTEs and physical memory to grow process from oldsz to
 // newsz, which need not be page aligned.  Returns new size or 0 on error.
 uint64
-uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
+uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz, int perm)
 {
   char *mem;
   uint64 a;
 
   if(newsz < oldsz)
     return oldsz;
+
+  if(!perm)
+    perm = PTE_W|PTE_X|PTE_R|PTE_U;
 
   oldsz = PGROUNDUP(oldsz);
   for(a = oldsz; a < newsz; a += PGSIZE){
@@ -231,7 +250,7 @@ uvmalloc(pagetable_t pagetable, uint64 oldsz, uint64 newsz)
       return 0;
     }
     memset(mem, 0, PGSIZE);
-    if(mappages(pagetable, a, PGSIZE, (uint64)mem, PTE_W|PTE_X|PTE_R|PTE_U) != 0){
+    if(mappages(pagetable, a, PGSIZE, (uint64)mem, perm) != 0){
       kfree(mem);
       uvmdealloc(pagetable, a, oldsz);
       return 0;
@@ -453,4 +472,115 @@ vmprint(pagetable_t pagetable)
   printf("page table %p\n", pagetable);
 
   _vmprint(pagetable, 1);
+}
+
+uint64
+mmap(uint64 addr, uint length, int prot, int flags, struct file *f, int offset)
+{
+  struct proc *p = myproc();
+  struct vmarea *a, *b, *c;
+
+  int first = 0;
+
+  if(offset % PGSIZE)
+    panic("mmap: not aligned");
+
+  addr = PGROUNDUP(addr);
+  length = PGROUNDUP(length);
+
+  if(addr < MMAP || addr + length > TRAPFRAME){
+    first = 1; /* invalid user request, try first fit */
+    addr = MMAP;
+  }
+
+_again:
+  if(!p->mmap || addr + length <= p->mmap->start){
+    /* space found before first vmarea */
+    a = 0;
+    b = p->mmap;
+  } else {
+    /* search hole from first vmarea */
+    for(a = p->mmap, b = 0; a != 0; a = a->next){
+      b = a->next;
+
+      if(!first){
+        /* check user request address */
+        if(a->end <= addr){
+          if(!b || addr + length <= b->start)
+            break; /* found */
+        } else {
+          first = 1; /* fail, try first fit next */
+          addr = MMAP;
+          goto _again;
+        }
+      } else {
+        if(!b){
+          if (a->end + length <= TRAPFRAME){
+            addr = a->end;
+            break; /* found */
+          } else
+            return -1; /* out of address space */
+        }
+
+        if(a->end + length <= b->start){
+          addr = a->end;
+          break; /* found */
+        }
+      }
+    }
+  }
+
+  c = vma_head;
+  if(!c)
+    return -1;
+
+  if(vma_head)
+    vma_head = vma_head->next;
+
+  /* a->c->b */
+  if(a)
+    a->next = c;
+  else
+    p->mmap = c; /* c is the head */
+
+  c->start = addr;
+  c->end = c->start + length;
+  c->next = b;
+
+  c->page_prot = PTE_U;
+  if(prot & PROT_READ)
+    c->page_prot |= PTE_R;
+  if(prot & PROT_WRITE)
+    c->page_prot |= PTE_W;
+  if(prot & PROT_EXEC)
+    c->page_prot |= PTE_X;
+
+  c->flags = flags;
+  c->pgoff = offset;
+  if(f)
+    c->file = filedup(f); /* increase reference count */
+  else
+    c->file = 0;
+
+  if(!uvmalloc(p->pagetable, c->start, c->start + length, c->page_prot))
+    goto _fail;
+
+  if(c->file && c->file->readable){
+    filelseek(c->file, c->pgoff, SEEK_SET);
+    fileread(c->file, c->start, length);
+  }
+
+  return c->start;
+
+_fail:
+  if(c->file){
+    fileclose(c->file);
+    c->file = 0;
+  }
+
+  /* insert to free list */
+  c->next = vma_head;
+  vma_head = c;
+
+  return -1;
 }

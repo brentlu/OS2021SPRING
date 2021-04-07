@@ -62,6 +62,10 @@
 //   fixed-size stack
 //   expandable heap
 //   ...
+//   MMAP
 //   TRAPFRAME (p->trapframe, used by the trampoline)
 //   TRAMPOLINE (the same page as in the kernel)
 #define TRAPFRAME (TRAMPOLINE - PGSIZE)
+
+// mmap starts from here, also the end of brk
+#define MMAP 0x40000000L

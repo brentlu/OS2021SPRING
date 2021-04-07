@@ -584,3 +584,122 @@ _fail:
 
   return -1;
 }
+
+uint64
+munmap(uint64 addr, uint length)
+{
+  struct proc *p = myproc();
+  struct vmarea *a, *b, *c;
+  uint64 eddr = addr + length;
+
+  if(addr % PGSIZE)
+    panic("munmap: not aligned");
+
+  length = PGROUNDUP(length);
+
+  for(a = p->mmap, b = 0; a != 0; a = a->next){
+    if(eddr <= a->start || addr >= a->end) /* no overlap */
+      continue;
+    else if(addr <= a->start && eddr >= a->end){
+      /* overlap: entire area */
+
+      /* write back entire area */
+      if(a->flags & MAP_SHARED)
+        if(a->file && a->file->writable){
+          filelseek(a->file, a->pgoff, SEEK_SET);
+          filewrite(a->file, a->start, a->end - a->start);
+        }
+
+      /* reclaim pyhsical pages */
+      uvmdealloc(p->pagetable, a->end, a->start);
+
+      /* release the file */
+      if(a->file){
+        fileclose(a->file);
+        a->file = 0;
+      }
+
+      /* remove this vmarea from process's mmap list */
+      if (!b)
+        p->mmap = a->next;
+      else
+        b->next = a->next;
+
+      /* insert to free list */
+      a->next = vma_head;
+      vma_head = a;
+    } else if(addr > a->start && eddr < a->end){
+      /* overlap: middle area */
+
+      /* write back middle area */
+      if(a->flags & MAP_SHARED)
+        if(a->file && a->file->writable){
+          filelseek(a->file, a->pgoff + addr - a->start, SEEK_SET);
+          filewrite(a->file, addr, length);
+        }
+
+      /* reclaim pyhsical pages */
+      uvmdealloc(p->pagetable, eddr, addr);
+
+      /* allocate new vmarea */
+      c = vma_head;
+      if(!c)
+        return -1;
+
+      if(vma_head)
+        vma_head = vma_head->next;
+
+      c->start = eddr;
+      c->end = a->end;
+      c->page_prot = a->page_prot;
+      c->flags = a->flags;
+      c->pgoff = a->pgoff + eddr - a->start;
+      if(a->file)
+        c->file = filedup(a->file);
+      else
+        c->file = 0;
+
+      /* update end address */
+      a->end = addr;
+
+      /* a->c */
+      c->next = a->next;
+      a->next = c;
+    } else if(addr <= a->start && eddr < a->end){
+      /* overlap: front area */
+
+      /* write back front area */
+      if(a->flags & MAP_SHARED)
+        if(a->file && a->file->writable){
+          filelseek(a->file, a->pgoff, SEEK_SET);
+          filewrite(a->file, a->start, eddr - a->start);
+        }
+
+      /* reclaim pyhsical pages */
+      uvmdealloc(p->pagetable, eddr, a->start);
+
+      /* update file offset and start address */
+      a->pgoff += eddr - a->start;
+      a->start = eddr;
+    } else {
+      /* overlap: tail area */
+
+      /* write back tail area */
+      if(a->flags & MAP_SHARED)
+        if(a->file && a->file->writable){
+          filelseek(a->file, a->pgoff + addr - a->start, SEEK_SET);
+          filewrite(a->file, addr, a->end - addr);
+        }
+
+      /* reclaim pyhsical pages */
+      uvmdealloc(p->pagetable, a->end, addr);
+
+      /* update end address */
+      a->end = addr;
+    }
+
+    b = a;
+  }
+
+  return 0;
+}

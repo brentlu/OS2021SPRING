@@ -140,6 +140,18 @@ sys_mmap(void)
 uint64
 sys_munmap(void)
 {
-  printf("%s:\n", __func__);
-  return -1;
+  uint64 addr;
+  uint length;
+
+  // typedef uint size_t;
+  //
+  // int munmap(void *addr, size_t length);
+
+  if(argaddr(0, &addr) < 0 || arguint(1, &length) < 0)
+    return -1;
+
+  if(addr % PGSIZE)
+    return -1;
+
+  return munmap(addr, length);
 }

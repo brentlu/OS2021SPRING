@@ -178,6 +178,7 @@ int             copyin(pagetable_t, char *, uint64, uint64);
 int             copyinstr(pagetable_t, char *, uint64, uint64);
 void            vmprint(pagetable_t);
 uint64          mmap(uint64, uint, int, int, struct file *, int);
+uint64          munmap(uint64, uint);
 
 // plic.c
 void            plicinit(void);

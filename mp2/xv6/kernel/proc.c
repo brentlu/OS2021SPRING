@@ -149,6 +149,9 @@ freeproc(struct proc *p)
   if(p->trapframe)
     kfree((void*)p->trapframe);
   p->trapframe = 0;
+  if(p->mmap)
+    mfree(p);
+  p->mmap = 0;
   if(p->pagetable)
     proc_freepagetable(p->pagetable, p->sz);
   p->pagetable = 0;
@@ -346,6 +349,9 @@ exit(int status)
 
   if(p == initproc)
     panic("init exiting");
+
+  // Close all mmap files
+  mclose();
 
   // Close all open files.
   for(int fd = 0; fd < NOFILE; fd++){

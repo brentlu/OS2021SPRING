@@ -703,3 +703,48 @@ munmap(uint64 addr, uint length)
 
   return 0;
 }
+
+// Close all mmap files
+// This function is called when process exits.
+void
+mclose(void)
+{
+  struct proc *p = myproc();
+  struct vmarea *a;
+
+  for(a = p->mmap; a != 0; a = a->next){
+    /* write back entire area */
+    if(a->flags & MAP_SHARED)
+      if(a->file && a->file->writable){
+        filelseek(a->file, a->pgoff, SEEK_SET);
+        filewrite(a->file, a->start, a->end - a->start);
+      }
+
+    /* release the file */
+    if(a->file){
+      fileclose(a->file);
+      a->file = 0;
+    }
+  }
+}
+
+// Free all physical pages allocated to mmap regions
+// This function is called in parent process.
+void
+mfree(struct proc *p)
+{
+  struct vmarea *a, *b;
+
+  for(a = p->mmap, b = 0; a != 0; a = a->next){
+    /* reclaim pyhsical pages */
+    uvmdealloc(p->pagetable, a->end, a->start);
+
+    b = a;
+  }
+
+  if(b){
+    /* insert to free list */
+    b->next = vma_head;
+    vma_head = p->mmap;
+  }
+}

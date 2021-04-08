@@ -38,3 +38,7 @@ struct devsw {
 extern struct devsw devsw[];
 
 #define CONSOLE 1
+
+#define SEEK_SET  0x1
+#define SEEK_CUR  0x2
+#define SEEK_END  0x3

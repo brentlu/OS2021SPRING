@@ -180,3 +180,31 @@ filewrite(struct file *f, uint64 addr, int n)
   return ret;
 }
 
+int
+filelseek(struct file* f, int offset, int whence)
+{
+  // typedef int off_t;
+  //
+  // off_t lseek(int fd, off_t offset, int whence);
+
+  if(f->type == FD_INODE){
+    if(whence == SEEK_SET)
+      f->off = offset;
+    else if(whence == SEEK_CUR)
+      f->off += offset;
+    else if(whence == SEEK_END){
+      struct stat st;
+
+      ilock(f->ip);
+      stati(f->ip, &st);
+      iunlock(f->ip);
+
+      f->off = st.size + offset;
+    } else
+      return -1;
+
+    return 0;
+  }
+
+  return -1;
+}

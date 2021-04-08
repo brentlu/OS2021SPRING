@@ -314,14 +314,17 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
 int
-uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
+uvmcopy(pagetable_t old, pagetable_t new, uint64 start, uint64 end)
 {
   pte_t *pte;
   uint64 pa, i;
   uint flags;
   char *mem;
 
-  for(i = 0; i < sz; i += PGSIZE){
+  if(start % PGSIZE)
+    panic("uvmcopy: not aligned");
+
+  for(i = start; i < end; i += PGSIZE){
     if((pte = walk(old, i, 0)) == 0)
       panic("uvmcopy: pte should exist");
     if((*pte & PTE_V) == 0)
@@ -339,7 +342,7 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 sz)
   return 0;
 
  err:
-  uvmunmap(new, 0, i / PGSIZE, 1);
+  uvmunmap(new, start, i / PGSIZE, 1);
   return -1;
 }
 
@@ -747,4 +750,62 @@ mfree(struct proc *p)
     b->next = vma_head;
     vma_head = p->mmap;
   }
+}
+
+// Copy all vm areas from parent to child
+// New physical memory will be allocated regardless vm flag in this
+// implementation.
+int
+mcopy(struct proc *np)
+{
+  struct proc *op = myproc();
+  struct vmarea *a, *b, *c;
+
+  for(a = op->mmap, b = 0; a != 0; a = a->next){
+    c = vma_head;
+    if(!c)
+      goto _fail;
+
+    if(vma_head)
+      vma_head = vma_head->next;
+
+    /* allocate new vmarea */
+    c->start = a->start;
+    c->end = a->end;
+    c->page_prot = a->page_prot;
+    c->flags = a->flags;
+    c->pgoff = a->pgoff;
+    if(a->file)
+      c->file = filedup(a->file);
+    else
+      c->file = 0;
+
+    /* allocate new physical pages */
+    if(uvmcopy(op->pagetable, np->pagetable, c->start, c->end))
+      goto _fail;
+
+    if(!b)
+      np->mmap = c;
+    else
+      b->next = c;
+
+    b = c;
+  }
+
+  if(b)
+    b->next = 0;
+
+  return 0;
+
+_fail:
+  /* complete the link list then return error */
+  if(!b)
+    np->mmap = c;
+  else
+    b->next = c;
+
+  if(c)
+    c->next = 0;
+
+  return -1;
 }

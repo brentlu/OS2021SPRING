@@ -22,6 +22,11 @@ pagetable_t kernel_pagetable;
 struct vmarea vma_cache[NVMAREA];
 struct vmarea *vma_head = 0;
 
+/*
+ * local static funcion definition
+ */
+static void _mfree(struct proc *, struct vmarea *, uint64, uint64, int);
+
 extern char etext[];  // kernel.ld sets this to end of kernel code.
 
 extern char trampoline[]; // trampoline.S
@@ -314,7 +319,7 @@ uvmfree(pagetable_t pagetable, uint64 sz)
 // returns 0 on success, -1 on failure.
 // frees any allocated pages on failure.
 int
-uvmcopy(pagetable_t old, pagetable_t new, uint64 start, uint64 end)
+uvmcopy(pagetable_t old, pagetable_t new, uint64 start, uint64 end, int sparse)
 {
   pte_t *pte;
   uint64 pa, i;
@@ -325,10 +330,18 @@ uvmcopy(pagetable_t old, pagetable_t new, uint64 start, uint64 end)
     panic("uvmcopy: not aligned");
 
   for(i = start; i < end; i += PGSIZE){
-    if((pte = walk(old, i, 0)) == 0)
-      panic("uvmcopy: pte should exist");
-    if((*pte & PTE_V) == 0)
-      panic("uvmcopy: page not present");
+    if((pte = walk(old, i, 0)) == 0){
+      if(!sparse)
+        panic("uvmcopy: pte should exist");
+      else
+        continue;
+    }
+    if((*pte & PTE_V) == 0){
+      if(!sparse)
+        panic("uvmcopy: page not present");
+      else
+        continue;
+    }
     pa = PTE2PA(*pte);
     flags = PTE_FLAGS(*pte);
     if((mem = kalloc()) == 0)
@@ -565,27 +578,7 @@ _again:
   else
     c->file = 0;
 
-  if(!uvmalloc(p->pagetable, c->start, c->start + length, c->page_prot))
-    goto _fail;
-
-  if(c->file && c->file->readable){
-    filelseek(c->file, c->pgoff, SEEK_SET);
-    fileread(c->file, c->start, length);
-  }
-
   return c->start;
-
-_fail:
-  if(c->file){
-    fileclose(c->file);
-    c->file = 0;
-  }
-
-  /* insert to free list */
-  c->next = vma_head;
-  vma_head = c;
-
-  return -1;
 }
 
 uint64
@@ -605,16 +598,7 @@ munmap(uint64 addr, uint length)
       continue;
     else if(addr <= a->start && eddr >= a->end){
       /* overlap: entire area */
-
-      /* write back entire area */
-      if(a->flags & MAP_SHARED)
-        if(a->file && a->file->writable){
-          filelseek(a->file, a->pgoff, SEEK_SET);
-          filewrite(a->file, a->start, a->end - a->start);
-        }
-
-      /* reclaim pyhsical pages */
-      uvmdealloc(p->pagetable, a->end, a->start);
+      _mfree(p, a, a->start, a->end, 1);
 
       /* release the file */
       if(a->file){
@@ -633,16 +617,7 @@ munmap(uint64 addr, uint length)
       vma_head = a;
     } else if(addr > a->start && eddr < a->end){
       /* overlap: middle area */
-
-      /* write back middle area */
-      if(a->flags & MAP_SHARED)
-        if(a->file && a->file->writable){
-          filelseek(a->file, a->pgoff + addr - a->start, SEEK_SET);
-          filewrite(a->file, addr, length);
-        }
-
-      /* reclaim pyhsical pages */
-      uvmdealloc(p->pagetable, eddr, addr);
+      _mfree(p, a, addr, eddr, 1);
 
       /* allocate new vmarea */
       c = vma_head;
@@ -670,32 +645,14 @@ munmap(uint64 addr, uint length)
       a->next = c;
     } else if(addr <= a->start && eddr < a->end){
       /* overlap: front area */
-
-      /* write back front area */
-      if(a->flags & MAP_SHARED)
-        if(a->file && a->file->writable){
-          filelseek(a->file, a->pgoff, SEEK_SET);
-          filewrite(a->file, a->start, eddr - a->start);
-        }
-
-      /* reclaim pyhsical pages */
-      uvmdealloc(p->pagetable, eddr, a->start);
+      _mfree(p, a, a->start, eddr, 1);
 
       /* update file offset and start address */
       a->pgoff += eddr - a->start;
       a->start = eddr;
     } else {
       /* overlap: tail area */
-
-      /* write back tail area */
-      if(a->flags & MAP_SHARED)
-        if(a->file && a->file->writable){
-          filelseek(a->file, a->pgoff + addr - a->start, SEEK_SET);
-          filewrite(a->file, addr, a->end - addr);
-        }
-
-      /* reclaim pyhsical pages */
-      uvmdealloc(p->pagetable, a->end, addr);
+      _mfree(p, a, addr, a->end, 1);
 
       /* update end address */
       a->end = addr;
@@ -716,12 +673,7 @@ mclose(void)
   struct vmarea *a;
 
   for(a = p->mmap; a != 0; a = a->next){
-    /* write back entire area */
-    if(a->flags & MAP_SHARED)
-      if(a->file && a->file->writable){
-        filelseek(a->file, a->pgoff, SEEK_SET);
-        filewrite(a->file, a->start, a->end - a->start);
-      }
+    _mfree(p, a, a->start, a->end, 0);
 
     /* release the file */
     if(a->file){
@@ -739,8 +691,7 @@ mfree(struct proc *p)
   struct vmarea *a, *b;
 
   for(a = p->mmap, b = 0; a != 0; a = a->next){
-    /* reclaim pyhsical pages */
-    uvmdealloc(p->pagetable, a->end, a->start);
+    _mfree(p, a, a->start, a->end, 1);
 
     b = a;
   }
@@ -781,7 +732,7 @@ mcopy(struct proc *np)
       c->file = 0;
 
     /* allocate new physical pages */
-    if(uvmcopy(op->pagetable, np->pagetable, c->start, c->end))
+    if(uvmcopy(op->pagetable, np->pagetable, c->start, c->end, 1))
       goto _fail;
 
     if(!b)
@@ -808,4 +759,71 @@ _fail:
     c->next = 0;
 
   return -1;
+}
+
+int
+mtrap(uint64 addr)
+{
+  struct proc *p = myproc();
+  struct vmarea *a;
+  int r = 0;
+
+  addr = PGROUNDDOWN(addr);
+
+  for(a = p->mmap; a != 0; a = a->next){
+    if(addr < a->start || addr >= a->end) /* not this area */
+      continue;
+
+    /* a new physical page dedicated to this process */
+    if(!uvmalloc(p->pagetable, addr, addr + PGSIZE, a->page_prot))
+      return -1;
+
+    /* update page from file if possible */
+    if(a->file && a->file->readable){
+      filelseek(a->file, a->pgoff + addr - a->start, SEEK_SET);
+      r = fileread(a->file, addr, PGSIZE);
+      if(r < 0)
+        return -1;
+    }
+
+    return 0;
+  }
+
+  return -1;
+}
+
+static void
+_mfree(struct proc *p, struct vmarea *a, uint64 start, uint64 end, int do_free)
+{
+  uint64 addr;
+  pte_t *pte;
+  int offset;
+
+  if(start % PGSIZE || end % PGSIZE)
+    panic("_mfree: not aligned");
+
+  offset = a->pgoff + start - a->start; /* file offset to read this page */
+
+  for(addr = start; addr < end; addr += PGSIZE){
+    if((pte = walk(p->pagetable, addr, 0)) == 0)
+      panic("_mfree: walk");
+    if((*pte & PTE_V) == 0) /* not valid page */
+      continue;
+    if(PTE_FLAGS(*pte) == PTE_V)
+      panic("_mfree: not a leaf");
+
+    if(a->flags & MAP_SHARED)
+      if(a->file && a->file->writable && *pte & PTE_D){
+        /* only if page is dirty */
+        filelseek(a->file, offset + addr - start, SEEK_SET);
+        filewrite(a->file, addr, PGSIZE);
+
+        *pte &= ~PTE_D;
+      }
+
+    if(do_free){
+      kfree((void *)PTE2PA(*pte));
+      *pte = 0;
+    }
+  }
 }

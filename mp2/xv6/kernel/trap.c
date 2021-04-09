@@ -65,6 +65,15 @@ usertrap(void)
     intr_on();
 
     syscall();
+  } else if(r_scause() == 13 || r_scause() == 15){
+    uint64 addr = r_stval();
+
+    // 13: load page fault
+    // 15: store/AMO page fault
+    if(mtrap(addr)){
+      printf("usertrap(): unexpected page fault at %p pid=%d\n", addr, p->pid);
+      p->killed = 1;
+    }
   } else if((which_dev = devintr()) != 0){
     // ok
   } else {

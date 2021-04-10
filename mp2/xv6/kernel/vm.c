@@ -26,6 +26,7 @@ struct vmarea *vma_head = 0;
  * local static funcion definition
  */
 static void _mfree(struct proc *, struct vmarea *, uint64, uint64, int);
+static uint _mrefupdate(struct vmarea *, int, int);
 
 extern char etext[];  // kernel.ld sets this to end of kernel code.
 
@@ -673,7 +674,10 @@ mclose(void)
   struct vmarea *a;
 
   for(a = p->mmap; a != 0; a = a->next){
-    _mfree(p, a, a->start, a->end, 0);
+    if(a->flags & MAP_PRIVATE)
+      _mfree(p, a, a->start, a->end, 0);
+    else if(a->flags & MAP_SHARED)
+      _mfree(p, a, a->start, a->end, 1);
 
     /* release the file */
     if(a->file){
@@ -691,7 +695,8 @@ mfree(struct proc *p)
   struct vmarea *a, *b;
 
   for(a = p->mmap, b = 0; a != 0; a = a->next){
-    _mfree(p, a, a->start, a->end, 1);
+    if(a->flags & MAP_PRIVATE)
+      _mfree(p, a, a->start, a->end, 1);
 
     b = a;
   }
@@ -704,8 +709,9 @@ mfree(struct proc *p)
 }
 
 // Copy all vm areas from parent to child
-// New physical memory will be allocated regardless vm flag in this
-// implementation.
+// New physical memory will be allocated when MAP_PRIVATE flag is set. All other
+// vm areas created with MAP_SHARED flag now share physical pages with other
+// processes opening same mapping file.
 int
 mcopy(struct proc *np)
 {
@@ -731,9 +737,34 @@ mcopy(struct proc *np)
     else
       c->file = 0;
 
-    /* allocate new physical pages */
-    if(uvmcopy(op->pagetable, np->pagetable, c->start, c->end, 1))
-      goto _fail;
+    if(a->flags & MAP_PRIVATE){
+      /* allocate new physical pages */
+      if(uvmcopy(op->pagetable, np->pagetable, c->start, c->end, 1))
+        goto _fail;
+    } else if(a->flags & MAP_SHARED){
+      pte_t *pte;
+      uint64 addr;
+
+      if(!c->file)
+        return -1; /* should not happen; anonymous mapping not support */
+
+      for(addr = c->start; addr < c->end; addr += PGSIZE){
+        if((pte = walk(op->pagetable, addr, 0)) == 0)
+          continue;
+        if((*pte & PTE_V) == 0)
+          continue;
+
+        /* copy the pte to new process's page table */
+        if(mappages(np->pagetable, addr, PGSIZE, PTE2PA(*pte), PTE_FLAGS(*pte)))
+          return -1;
+
+        //printf("fork   pa=%p va=%p pid=%d\n", PTE2PA(*pte), addr, np->pid);
+
+        /* increase the ref count in inode page table */
+        _mrefupdate(c, c->pgoff + addr - c->start, 1);
+      }
+    } else
+      panic("mcopy: invalid flag");
 
     if(!b)
       np->mmap = c;
@@ -766,7 +797,7 @@ mtrap(uint64 addr)
 {
   struct proc *p = myproc();
   struct vmarea *a;
-  int r = 0;
+  int offset, r = 0;
 
   addr = PGROUNDDOWN(addr);
 
@@ -774,17 +805,67 @@ mtrap(uint64 addr)
     if(addr < a->start || addr >= a->end) /* not this area */
       continue;
 
-    /* a new physical page dedicated to this process */
-    if(!uvmalloc(p->pagetable, addr, addr + PGSIZE, a->page_prot))
-      return -1;
+    if(!a->file)
+      return -1; /* should not happen; anonymous mapping not support */
 
-    /* update page from file if possible */
-    if(a->file && a->file->readable){
-      filelseek(a->file, a->pgoff + addr - a->start, SEEK_SET);
-      r = fileread(a->file, addr, PGSIZE);
-      if(r < 0)
+    offset = a->pgoff + addr - a->start; /* file offset to read this page */
+
+    if(a->flags & MAP_PRIVATE){
+      /* a new physical page dedicated to this process */
+      if(!uvmalloc(p->pagetable, addr, addr + PGSIZE, a->page_prot))
         return -1;
-    }
+
+      /* update page from file if possible */
+      if(a->file->readable){
+        filelseek(a->file, offset, SEEK_SET);
+        r = fileread(a->file, addr, PGSIZE);
+        if(r < 0)
+          return -1;
+      }
+    } else if(a->flags & MAP_SHARED){
+      pte_t *pte;
+      char *mem;
+
+      /* lookup/allocate the inode page table */
+      if((pte = walk(a->file->ip->pagetable, offset, 1)) == 0)
+        return -1;
+
+      if(*pte & PTE_V){
+        /* already mapped by other process, reuse the physical page */
+        if(mappages(p->pagetable, addr, PGSIZE, PTE2PA(*pte), a->page_prot))
+          return -1;
+
+        //printf("reuse  pa=%p va=%p pid=%d\n", PTE2PA(*pte), addr, p->pid);
+      } else {
+        /* first-time mapping, refer to uvmalloc() */
+        mem = kalloc();
+        if(!mem)
+          return -1;
+        memset(mem, 0, PGSIZE);
+        if(mappages(p->pagetable, addr, PGSIZE, (uint64)mem, a->page_prot)){
+          kfree(mem);
+          return -1;
+        }
+
+        //printf("kalloc pa=%p va=%p pid=%d\n", mem, addr, p->pid);
+
+        /* update page from file if possible */
+        if(a->file->readable){
+          filelseek(a->file, offset, SEEK_SET);
+          r = fileread(a->file, addr, PGSIZE);
+          if(r < 0)
+            return -1;
+        }
+
+        /* update inode page table for other process */
+        if(mappages(a->file->ip->pagetable, offset, PGSIZE, (uint64)mem, 0))
+          return -1;
+      }
+
+      /* increase the ref count in inode page table */
+      _mrefupdate(a, offset, 1);
+    } else
+      panic("mtrap: invalid flag");
 
     return 0;
   }
@@ -802,28 +883,87 @@ _mfree(struct proc *p, struct vmarea *a, uint64 start, uint64 end, int do_free)
   if(start % PGSIZE || end % PGSIZE)
     panic("_mfree: not aligned");
 
-  offset = a->pgoff + start - a->start; /* file offset to read this page */
+  if(a->flags & MAP_PRIVATE){
+    if(!do_free)
+      return;
 
-  for(addr = start; addr < end; addr += PGSIZE){
-    if((pte = walk(p->pagetable, addr, 0)) == 0)
-      panic("_mfree: walk");
-    if((*pte & PTE_V) == 0) /* not valid page */
-      continue;
-    if(PTE_FLAGS(*pte) == PTE_V)
-      panic("_mfree: not a leaf");
+    for(addr = start; addr < end; addr += PGSIZE){
+      if((pte = walk(p->pagetable, addr, 0)) == 0)
+        continue;
+      if((*pte & PTE_V) == 0) /* not valid page */
+        continue;
+      if(PTE_FLAGS(*pte) == PTE_V)
+        panic("_mfree: not a leaf");
 
-    if(a->flags & MAP_SHARED)
-      if(a->file && a->file->writable && *pte & PTE_D){
+      kfree((void *)PTE2PA(*pte));
+      *pte = 0;
+    }
+  } else if(a->flags & MAP_SHARED){
+    if(!a->file)
+      return; /* should not happen; anonymous mapping not support */
+
+    for(addr = start; addr < end; addr += PGSIZE){
+      if((pte = walk(p->pagetable, addr, 0)) == 0)
+        continue;
+      if((*pte & PTE_V) == 0) /* not valid page */
+        continue;
+      if(PTE_FLAGS(*pte) == PTE_V)
+        panic("_mfree: not a leaf");
+
+      offset = a->pgoff + addr - a->start; /* file offset to read this page */
+
+      if(a->file->writable && *pte & PTE_D){
         /* only if page is dirty */
-        filelseek(a->file, offset + addr - start, SEEK_SET);
+        filelseek(a->file, offset, SEEK_SET);
         filewrite(a->file, addr, PGSIZE);
 
         *pte &= ~PTE_D;
       }
 
-    if(do_free){
-      kfree((void *)PTE2PA(*pte));
+      /* decrease the ref count in inode page table */
+      if(!_mrefupdate(a, offset, -1)){
+        uint64 pa = PTE2PA(*pte);
+
+        //printf("kfree  pa=%p va=%p pid=%d\n", pa, addr, p->pid);
+        kfree((void *)pa);
+      }
+
       *pte = 0;
     }
-  }
+  } else
+    panic("_mfree: invalid flag");
+
+  return;
+}
+
+// helper function to update the ref count of physical pages allocated to a
+// mmap file
+static uint
+_mrefupdate(struct vmarea *a, int offset, int increase)
+{
+  pte_t *pte;
+  int ref;
+
+  /* get the page table hinding in inode */
+  if((pte = walk(a->file->ip->pagetable, offset, 0)) == 0)
+    panic("_mrefupdate: walk");
+  if((*pte & PTE_V) == 0)
+    panic("_mrefupdate: not mapped");
+
+  /*
+   * update the ref count
+   * bit-0 is the V bit so we use bit-1 to bit-9 as ref count
+   */
+  ref = PTE_FLAGS(*pte) >> 1;
+  ref += increase;
+
+  if(ref < 0)
+    panic("_mrefupdate: count corruption");
+
+  if(ref)
+    *pte = PA2PTE(PTE2PA(*pte)) | (uint)ref << 1 | PTE_V;
+  else
+    *pte = 0;
+
+  return (uint)ref;
 }

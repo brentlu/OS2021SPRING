@@ -267,6 +267,9 @@ iget(uint dev, uint inum)
   ip->inum = inum;
   ip->ref = 1;
   ip->valid = 0;
+  ip->pagetable = uvmcreate();
+  if(!ip->pagetable)
+    panic("iget: out of memory");
   release(&icache.lock);
 
   return ip;
@@ -351,6 +354,8 @@ iput(struct inode *ip)
     releasesleep(&ip->lock);
 
     acquire(&icache.lock);
+    uvmfree(ip->pagetable, 0);
+    ip->pagetable = 0;
   }
 
   ip->ref--;

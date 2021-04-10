@@ -1,3 +1,5 @@
+#include "riscv.h"
+
 struct file {
   enum { FD_NONE, FD_PIPE, FD_INODE, FD_DEVICE } type;
   int ref; // reference count
@@ -27,6 +29,8 @@ struct inode {
   short nlink;
   uint size;
   uint addrs[NDIRECT+1];
+
+  pagetable_t pagetable;
 };
 
 // map major device number to device functions.

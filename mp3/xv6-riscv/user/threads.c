@@ -4,6 +4,11 @@
 #include "user/user.h"
 #define NULL 0
 
+#define SCHEDULE_DEFAULT 0
+#define SCHEDULE_FCFS    1
+#define SCHEDULE_RR      2
+#define SCHEDULE_SJF     3
+#define SCHEDULE_PSJF    4
 
 static struct thread* current_thread = NULL;
 static int id = 1;
@@ -11,6 +16,8 @@ static int __time_slot_size = 10;
 static int is_thread_start = 0;
 static jmp_buf env_st;
 // static jmp_buf env_tmp;
+
+static int scheduler = SCHEDULE_PSJF;
 
 struct thread *thread_create(void (*f)(void *), void *arg, int execution_time_slot){
     struct thread *t = (struct thread*) malloc(sizeof(struct thread));
@@ -64,6 +71,9 @@ void thread_add_runqueue(struct thread *t){
 }
 
 void my_thrdstop_handler(void){
+    if (scheduler == SCHEDULE_RR)
+        current_thread->remain_quantum--;
+
     current_thread->remain_execution_time -= __time_slot_size ;
     if( current_thread->remain_execution_time <= 0 )
     {
@@ -134,11 +144,92 @@ void schedule(void){
     if( is_thread_start == 0 )
     {
         // execute the first thread in wait_queue at time==0
+        switch (scheduler) {
+        case SCHEDULE_RR:
+            current_thread->remain_quantum = 3;
+            /* fallthrough */
+        case SCHEDULE_FCFS:
+        case SCHEDULE_DEFAULT:
+        default:
+            /* select the first thread */
+            break;
+        case SCHEDULE_SJF:
+        case SCHEDULE_PSJF:
+            if (1) {
+                struct thread* m = current_thread;
+
+                for (struct thread* t = current_thread->next; t != current_thread; t = t->next) {
+                    if (t->is_exited)
+                        continue;
+
+                    if (m->is_exited)
+                        m = t;
+                    else if (t->remain_execution_time < m->remain_execution_time)
+                        m = t;
+                    else if (t->remain_execution_time == m->remain_execution_time && t->ID < m->ID)
+                        m = t;
+                }
+
+                current_thread = m;
+            }
+            break;
+        }
         return ;
     }
     else
     {
-        current_thread = current_thread->next;
+        switch (scheduler) {
+        case SCHEDULE_FCFS:
+            if (current_thread->is_exited) // ignore yield
+                current_thread = current_thread->next;
+            break;
+        case SCHEDULE_RR:
+            if (current_thread->is_exited || current_thread->is_yield ||
+                current_thread->remain_quantum <= 0) {
+                current_thread = current_thread->next;
+                current_thread->remain_quantum = 3;
+            }
+            break;
+        case SCHEDULE_SJF:
+            if (current_thread->is_exited) { // ignore yield
+                struct thread* m = NULL;
+
+                for (struct thread* t = current_thread->next; t != current_thread; t = t->next) {
+                    if (!m)
+                        m = t;
+                    else if (t->remain_execution_time < m->remain_execution_time)
+                        m = t;
+                    else if (t->remain_execution_time == m->remain_execution_time && t->ID < m->ID)
+                        m = t;
+                }
+
+                current_thread = m;
+            }
+            break;
+        case SCHEDULE_PSJF:
+            if (1) {
+                struct thread* m = current_thread;
+
+                for (struct thread* t = current_thread->next; t != current_thread; t = t->next) {
+                    if (t->is_exited)
+                        continue;
+
+                    if (m->is_exited)
+                        m = t;
+                    else if (t->remain_execution_time < m->remain_execution_time)
+                        m = t;
+                    else if (t->remain_execution_time == m->remain_execution_time && t->ID < m->ID)
+                        m = t;
+                }
+
+                current_thread = m;
+            }
+            break;
+        case SCHEDULE_DEFAULT:
+        default:
+            current_thread = current_thread->next;
+            break;
+        }
     }
 }
 void thread_exit(void){

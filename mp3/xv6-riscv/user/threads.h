@@ -22,6 +22,7 @@ struct thread {
     int start_time; // measure in ticks
     int is_yield;
     int is_exited;
+    int remain_quantum;
 };
 
 struct thread *thread_create(void (*f)(void *), void *arg, int execution_time_slot);

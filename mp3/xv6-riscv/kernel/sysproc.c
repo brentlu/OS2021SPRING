@@ -110,7 +110,7 @@ sys_thrdstop(void)
   if (argaddr(2, &handler) < 0)
     return -1;
 
-  return 0;
+  return thrdstop(interval, thrdstop_context_id, handler);
 }
 
 // for mp3
@@ -120,7 +120,8 @@ sys_cancelthrdstop(void)
   int thrdstop_context_id;
   if (argint(0, &thrdstop_context_id) < 0)
     return -1;
-  return 0;
+
+  return cancelthrdstop(thrdstop_context_id);
 }
 
 // for mp3
@@ -133,5 +134,5 @@ sys_thrdresume(void)
   if (argint(1, &is_exit) < 0)
     return -1;
 
-  return 0;
+  return thrdresume(thrdstop_context_id, is_exit);
 }

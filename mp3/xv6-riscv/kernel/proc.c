@@ -702,3 +702,202 @@ procdump(void)
     printf("\n");
   }
 }
+
+int
+thrdstop(int ticks, int tid, uint64 handler)
+{
+  struct proc *p = myproc();
+
+  // install handler
+  p->thrdstop_ticks = 0;
+  p->thrdstop_handler_pointer = handler;
+
+  if(tid < 0){
+    for(int i = 0; i < MAX_THRD_NUM; i++) {
+      if(!p->thrdstop_context_used[i]){
+        p->thrdstop_context_used[i] = 1;
+        p->thrdstop_context_id = i;
+
+        // start the countdown
+        p->thrdstop_interval = ticks;
+        return i;
+      }
+    }
+
+    // no free slot
+    p->thrdstop_interval = -1;
+    return -1;
+  }
+
+  if(!p->thrdstop_context_used[tid])
+    panic("thrdstop: context is not used");
+
+  p->thrdstop_context_id = tid;
+  p->thrdstop_interval = ticks;
+  return tid;
+}
+
+static int
+checktid(struct proc *p, int tid)
+{
+  if(tid < 0){
+    printf("checktid: invalid tid");
+    return -1;
+  }
+
+  if(!p->thrdstop_context_used[tid]){
+    printf("checktid: context is not used");
+    return -1;
+  }
+
+  return 0;
+}
+
+int
+thrdresume(int tid, int exit)
+{
+  struct proc *p = myproc();
+  struct thrd_context_data *context;
+
+  if(checktid(p, tid))
+    panic("thrdresume: invalid tid");
+
+  if(!exit){
+    // load the context and swith to new thread
+    context = &p->thrdstop_context[tid];
+
+    p->trapframe->s0 = context->s_regs[0];
+    p->trapframe->s1 = context->s_regs[1];
+    p->trapframe->s2 = context->s_regs[2];
+    p->trapframe->s3 = context->s_regs[3];
+    p->trapframe->s4 = context->s_regs[4];
+    p->trapframe->s5 = context->s_regs[5];
+    p->trapframe->s6 = context->s_regs[6];
+    p->trapframe->s7 = context->s_regs[7];
+    p->trapframe->s8 = context->s_regs[8];
+    p->trapframe->s9 = context->s_regs[9];
+    p->trapframe->s10 = context->s_regs[10];
+    p->trapframe->s11 = context->s_regs[11];
+
+    p->trapframe->ra = context->ra;
+    p->trapframe->sp = context->sp;
+
+    p->trapframe->t0 = context->t_regs[0];
+    p->trapframe->t1 = context->t_regs[1];
+    p->trapframe->t2 = context->t_regs[2];
+    p->trapframe->t3 = context->t_regs[3];
+    p->trapframe->t4 = context->t_regs[4];
+    p->trapframe->t5 = context->t_regs[5];
+    p->trapframe->t6 = context->t_regs[6];
+
+    p->trapframe->a0 = context->a_regs[0];
+    p->trapframe->a1 = context->a_regs[1];
+    p->trapframe->a2 = context->a_regs[2];
+    p->trapframe->a3 = context->a_regs[3];
+    p->trapframe->a4 = context->a_regs[4];
+    p->trapframe->a5 = context->a_regs[5];
+    p->trapframe->a6 = context->a_regs[6];
+    p->trapframe->a7 = context->a_regs[7];
+
+    p->trapframe->gp = context->gp;
+    p->trapframe->tp = context->tp;
+    p->trapframe->epc = context->epc;
+  } else {
+    // stop the countdown
+    p->thrdstop_interval = -1;
+
+    // free the tid
+    p->thrdstop_context_used[tid] = 0;
+  }
+
+  return 0;
+}
+
+static void
+thrdsave(struct thrd_context_data *context, struct trapframe *trapframe)
+{
+  context->s_regs[0] = trapframe->s0;
+  context->s_regs[1] = trapframe->s1;
+  context->s_regs[2] = trapframe->s2;
+  context->s_regs[3] = trapframe->s3;
+  context->s_regs[4] = trapframe->s4;
+  context->s_regs[5] = trapframe->s5;
+  context->s_regs[6] = trapframe->s6;
+  context->s_regs[7] = trapframe->s7;
+  context->s_regs[8] = trapframe->s8;
+  context->s_regs[9] = trapframe->s9;
+  context->s_regs[10] = trapframe->s10;
+  context->s_regs[11] = trapframe->s11;
+
+  context->ra = trapframe->ra;
+  context->sp = trapframe->sp;
+
+  context->t_regs[0] = trapframe->t0;
+  context->t_regs[1] = trapframe->t1;
+  context->t_regs[2] = trapframe->t2;
+  context->t_regs[3] = trapframe->t3;
+  context->t_regs[4] = trapframe->t4;
+  context->t_regs[5] = trapframe->t5;
+  context->t_regs[6] = trapframe->t6;
+
+  context->a_regs[0] = trapframe->a0;
+  context->a_regs[1] = trapframe->a1;
+  context->a_regs[2] = trapframe->a2;
+  context->a_regs[3] = trapframe->a3;
+  context->a_regs[4] = trapframe->a4;
+  context->a_regs[5] = trapframe->a5;
+  context->a_regs[6] = trapframe->a6;
+  context->a_regs[7] = trapframe->a7;
+
+  context->gp = trapframe->gp;
+  context->tp = trapframe->tp;
+  context->epc = trapframe->epc;
+
+  return;
+}
+
+int
+cancelthrdstop(int tid)
+{
+  struct proc *p = myproc();
+
+  // stop the countdown
+  p->thrdstop_interval = -1;
+
+  if(tid < 0)
+    return p->thrdstop_ticks;
+
+  if(!p->thrdstop_context_used[tid])
+    panic("cancelthrdstop: context is not used");
+
+  // save the context
+  thrdsave(&p->thrdstop_context[tid], p->trapframe);
+
+  return p->thrdstop_ticks;
+}
+
+void
+thrdtimertrap(void)
+{
+  struct proc *p = myproc();
+
+  if(p->thrdstop_interval < 0)
+    return;
+
+  p->thrdstop_ticks++;
+
+  if(p->thrdstop_ticks < p->thrdstop_interval)
+    return;
+
+  // stop the countdown
+  p->thrdstop_interval = -1;
+
+  if(checktid(p, p->thrdstop_context_id))
+    panic("thrdtimertrap: invalid tid");
+
+  // save the context
+  thrdsave(&p->thrdstop_context[p->thrdstop_context_id], p->trapframe);
+
+  // insert the handler to trapframe
+  p->trapframe->epc = p->thrdstop_handler_pointer;
+}

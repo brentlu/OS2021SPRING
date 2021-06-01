@@ -26,7 +26,10 @@ struct inode {
   short minor;
   short nlink;
   uint size;
-  uint addrs[NDIRECT+1]; // TODO: bigfile. If you modify dinode, don't forget here.
+  uint addrs[NDIRECT+3]; // addrs[0~9]: direct block
+                         // addrs[10]:  indirect block
+                         // addrs[11]:  2-level indirect block
+                         // addrs[12]:  3-level indirect block
 };
 
 // map major device number to device functions.

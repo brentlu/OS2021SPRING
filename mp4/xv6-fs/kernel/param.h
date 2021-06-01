@@ -10,5 +10,5 @@
 #define LOGSIZE      (MAXOPBLOCKS*3)  // max data blocks in on-disk log
 #define NBUF         (MAXOPBLOCKS*3)  // size of disk block cache
 // TODO: bigfile. You need 200000 FSSIZE to finish Large Files.
-#define FSSIZE       2000  // size of file system in blocks
+#define FSSIZE       200000  // size of file system in blocks
 #define MAXPATH      128   // maximum file path name

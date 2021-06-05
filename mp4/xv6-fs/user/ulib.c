@@ -90,7 +90,7 @@ stat(const char *n, struct stat *st)
   int fd;
   int r;
 
-  fd = open(n, O_RDONLY);
+  fd = open(n, O_RDONLY | O_NOFOLLOW);
   if(fd < 0)
     return -1;
   r = fstat(fd, st);

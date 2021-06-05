@@ -1,12 +1,14 @@
+#include "kernel/param.h"
 #include "kernel/types.h"
 #include "kernel/stat.h"
+#include "kernel/fcntl.h"
 #include "user/user.h"
 #include "kernel/fs.h"
 
 char*
-fmtname(char *path)
+fmtname(char *path, char *symlink)
 {
-  static char buf[DIRSIZ+1];
+  static char buf[MAXPATH];
   char *p;
 
   // Find first character after last slash.
@@ -14,23 +16,26 @@ fmtname(char *path)
     ;
   p++;
 
-  // Return blank-padded name.
-  if(strlen(p) >= DIRSIZ)
-    return p;
-  memmove(buf, p, strlen(p));
-  memset(buf+strlen(p), ' ', DIRSIZ-strlen(p));
+  // append symbolic link
+  strcpy(buf, p);
+  if(strlen(symlink)) {
+    strcat(buf, " -> ");
+    strcat(buf, symlink);
+  }
+
   return buf;
 }
 
 void
 ls(char *path)
 {
-  char buf[512], *p;
+  char buf[512], *p, t;
+  char symlink[MAXPATH];
   int fd;
   struct dirent de;
   struct stat st;
 
-  if((fd = open(path, 0)) < 0){
+  if((fd = open(path, O_RDONLY | O_NOFOLLOW)) < 0){
     fprintf(2, "ls: cannot open %s\n", path);
     return;
   }
@@ -43,7 +48,19 @@ ls(char *path)
 
   switch(st.type){
   case T_FILE:
-    printf("%s %d %d %l\n", fmtname(path), st.type, st.ino, st.size);
+    printf("%c %d\t%d\t%d\t%s\n", '-', st.type, st.ino, st.size, fmtname(path, ""));
+    break;
+
+  case T_DEVICE:
+    printf("%c %d\t%d\t%d\t%s\n", 'c', st.type, st.ino, st.size, fmtname(path, ""));
+    break;
+
+  case T_SYMLINK:
+    if(read(fd, symlink, MAXPATH) != MAXPATH)
+      symlink[0] = '\0';
+
+    printf("%c %d\t%d\t%d\t%s\n", 'l', st.type, st.ino, st.size, fmtname(path, symlink));
+    symlink[0] = '\0';
     break;
 
   case T_DIR:
@@ -63,7 +80,29 @@ ls(char *path)
         printf("ls: cannot stat %s\n", buf);
         continue;
       }
-      printf("%s %d %d %d\n", fmtname(buf), st.type, st.ino, st.size);
+      switch(st.type){
+      case T_DIR: t = 'd'; break;
+      case T_FILE: t = '-'; break;
+      case T_DEVICE: t = 'c'; break;
+      case T_SYMLINK:
+      {
+        int fd;
+
+        t = 'l';
+
+        fd = open(buf, O_RDONLY | O_NOFOLLOW);
+        if(fd < 0)
+          break;
+        if(read(fd, symlink, MAXPATH) != MAXPATH)
+          symlink[0] = '\0';
+        close(fd);
+
+        break;
+      }
+      default: t = ' '; break;
+      }
+      printf("%c %d\t%d\t%d\t%s\n", t, st.type, st.ino, st.size, fmtname(buf, symlink));
+      symlink[0] = '\0';
     }
     break;
   }

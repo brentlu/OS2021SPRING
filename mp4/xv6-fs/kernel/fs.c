@@ -733,12 +733,15 @@ skipelem(char *path, char *name)
 // path element into name, which must have room for DIRSIZ bytes.
 // Must be called inside a transaction since it calls iput().
 static struct inode*
-namex(char *path, int nameiparent, char *name)
+namex(char *path, int nameiparent, char *name, int nofollow)
 {
   // TODO: Symbolic Link to Directories
   // Modify this function to deal with symbolic links to directories.
   struct inode *ip, *next;
-  
+  char target[MAXPATH];
+  char *org = path;
+  int depth = 0;
+
   if(*path == '/')
     ip = iget(ROOTDEV, ROOTINO);
   else
@@ -759,8 +762,65 @@ namex(char *path, int nameiparent, char *name)
       iunlockput(ip);
       return 0;
     }
-    iunlockput(ip);
-    ip = next;
+
+    depth++;
+    if(depth > MAXPATH){
+      iunlockput(ip);
+      return 0;
+    }
+
+    /* don't lock same ip twice */
+    if(ip == next){
+      iunlockput(ip);
+      ip = next;
+      continue;
+    }
+
+    /* lock here to load the inode */
+    ilock(next);
+    if(next->type != T_SYMLINK){
+      iunlock(next);
+      iunlockput(ip);
+      ip = next;
+    } else {
+      if(nofollow && *path == '\0'){
+        /* caller wants the inode of symbolic link itself */
+        iunlock(next);
+        iunlockput(ip);
+        return next;
+      }
+
+      /* read the symbolic link */
+      if(readi(next, 0, (uint64)target, 0, MAXPATH) != MAXPATH){
+        iunlockput(next);
+        iunlockput(ip);
+        return 0;
+      }
+      iunlockput(next);
+
+      /* path expansion, concatenate the symbolic link and unwalked
+       * path
+       */
+      if(*path != '\0'){
+        if(strlen(target)+strlen(path)+1 >= MAXPATH){
+          iunlockput(ip);
+          return 0;
+        }
+
+        strcat(target, "/");
+        strcat(target, path);
+      }
+
+      safestrcpy(org, target, MAXPATH);
+      path = org;
+
+      if(*path == '/'){
+        /* new path starts from root directory */
+        iunlockput(ip);
+        ip = iget(ROOTDEV, ROOTINO);
+      } else
+        iunlock(ip);
+    }
   }
   if(nameiparent){
     iput(ip);
@@ -770,14 +830,23 @@ namex(char *path, int nameiparent, char *name)
 }
 
 struct inode*
-namei(char *path)
+namei(char *path, int nofollow)
 {
   char name[DIRSIZ];
-  return namex(path, 0, name);
+  char buf[MAXPATH];
+
+  /* copy to new buffer since path could be modified due to path
+   * expansion
+   */
+  safestrcpy(buf, path, MAXPATH);
+  return namex(buf, 0, name, nofollow);
 }
 
 struct inode*
 nameiparent(char *path, char *name)
 {
-  return namex(path, 1, name);
+  char buf[MAXPATH];
+
+  safestrcpy(buf, path, MAXPATH);
+  return namex(buf, 1, name, 0);
 }

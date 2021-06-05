@@ -240,7 +240,7 @@ userinit(void)
   p->trapframe->sp = PGSIZE;  // user stack pointer
 
   safestrcpy(p->name, "initcode", sizeof(p->name));
-  p->cwd = namei("/");
+  p->cwd = namei("/", 0);
 
   p->state = RUNNABLE;
 

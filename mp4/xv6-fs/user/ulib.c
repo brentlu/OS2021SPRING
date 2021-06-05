@@ -14,6 +14,20 @@ strcpy(char *s, const char *t)
   return os;
 }
 
+char *
+strcat(char *s, const char *t)
+{
+  char *os;
+
+  os = s;
+  while(*s++ != 0)
+    ;
+  s--;
+  while((*s++ = *t++) != 0)
+    ;
+  return os;
+}
+
 int
 strcmp(const char *p, const char *q)
 {
